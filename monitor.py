@@ -14,14 +14,11 @@ def _log(msg: str):
 
 async def probe_one(client: httpx.AsyncClient, proxy_id: str, url: str, timeout_s: float):
     try:
-        resp = await client.get(url, timeout=timeout_s, follow_redirects=False)
-        if 200 <= resp.status_code < 300:
-            return proxy_id, "up"
-        if 500 <= resp.status_code < 600:
-            return proxy_id, "down"
-        return proxy_id, "up"
-    except Exception:
-        return proxy_id, "down"
+        resp = await client.get(url, timeout=timeout_s, follow_redirects=True)
+        status = "up" if 200 <= resp.status_code < 300 else "down"
+        return proxy_id, status, resp.status_code
+    except Exception as e:
+        return proxy_id, "down", repr(e)[:60]
 
 
 async def run_one_cycle(client: httpx.AsyncClient):
@@ -39,11 +36,14 @@ async def run_one_cycle(client: httpx.AsyncClient):
     checked_at = now_iso()
     up_count = 0
     down_count = 0
+    down_reasons = []
     with state.lock:
         for r in results:
             if isinstance(r, Exception):
                 continue
-            pid, new_status = r
+            pid, new_status, reason = r
+            if new_status == "down":
+                down_reasons.append(f"{pid}={reason}")
             proxy = state.proxies.get(pid)
             if proxy is None:
                 continue
@@ -63,6 +63,9 @@ async def run_one_cycle(client: httpx.AsyncClient):
             state.total_checks += 1
 
         transitions = evaluate_alert_state()
+
+    if down_reasons:
+        _log(f"down reasons: {down_reasons[:5]}")
 
     if transitions:
         _log(f"transitions emitted: {[t['event'] for t in transitions]}")
