@@ -6,9 +6,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from state import state
+from state import state, now_iso as _now_iso
 from monitor import monitor_loop
 from alerts import compute_pool_stats
+from webhooks import dispatch_transitions
 
 
 def extract_proxy_id(url: str) -> str:
@@ -112,9 +113,16 @@ async def add_proxies(request: Request):
     replace = bool(body.get("replace", False))
 
     accepted_list = []
+    transitions = []
     with state.lock:
         if replace:
             state.proxies.clear()
+            if state.active_alert is not None:
+                alert = state.active_alert
+                alert["status"] = "resolved"
+                alert["resolved_at"] = _now_iso()
+                state.active_alert = None
+                transitions.append({"event": "alert.resolved", "alert": alert})
 
         for url in proxies_in:
             if not isinstance(url, str) or not url:
@@ -143,6 +151,9 @@ async def add_proxies(request: Request):
                 "url": url,
                 "status": "pending",
             })
+
+    if transitions:
+        await dispatch_transitions(transitions)
 
     return JSONResponse(
         status_code=201,
@@ -185,8 +196,17 @@ async def get_proxy_history(proxy_id: str):
 
 @app.delete("/proxies", status_code=204)
 async def delete_proxies():
+    transitions = []
     with state.lock:
         state.proxies.clear()
+        if state.active_alert is not None:
+            alert = state.active_alert
+            alert["status"] = "resolved"
+            alert["resolved_at"] = _now_iso()
+            state.active_alert = None
+            transitions.append({"event": "alert.resolved", "alert": alert})
+    if transitions:
+        await dispatch_transitions(transitions)
     return Response(status_code=204)
 
 
