@@ -53,10 +53,6 @@ def evaluate_alert_state() -> List[dict]:
         alert = state.active_alert
         alert["status"] = "resolved"
         alert["resolved_at"] = now_iso()
-        alert["failed_proxy_ids"] = down_ids
-        alert["failed_proxies"] = down
-        alert["failure_rate"] = failure_rate
-        alert["total_proxies"] = total
         state.active_alert = None
         transitions.append({"event": "alert.resolved", "alert": alert})
 

@@ -1,10 +1,17 @@
 import asyncio
+import sys
 import httpx
 from state import state
 from integrations import format_slack, format_discord
 
 TRANSIENT_FAILURE_CODES = {500, 502, 503, 504}
 MAX_RETRY_DELAY = 5
+
+_pending_tasks: set = set()
+
+
+def _log(msg: str):
+    print(f"[webhooks] {msg}", flush=True, file=sys.stdout)
 
 
 def build_fired_payload(alert: dict) -> dict:
@@ -42,7 +49,9 @@ async def deliver_once(client: httpx.AsyncClient, url: str, payload: dict) -> bo
         if resp.status_code in TRANSIENT_FAILURE_CODES:
             return False
         return True
-    except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError):
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+        return False
+    except Exception:
         return False
 
 
@@ -51,19 +60,26 @@ async def deliver_with_retry(url: str, payload: dict, dedupe_key: tuple):
         if dedupe_key in state.delivered:
             return
 
-    delay = 1.0
-    async with httpx.AsyncClient() as client:
-        while True:
-            success = await deliver_once(client, url, payload)
-            if success:
-                with state.lock:
-                    if dedupe_key in state.delivered:
-                        return
-                    state.delivered.add(dedupe_key)
-                    state.webhook_deliveries += 1
-                return
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, MAX_RETRY_DELAY)
+    delay = 0.5
+    attempt = 0
+    try:
+        async with httpx.AsyncClient() as client:
+            while True:
+                attempt += 1
+                success = await deliver_once(client, url, payload)
+                if success:
+                    with state.lock:
+                        if dedupe_key in state.delivered:
+                            return
+                        state.delivered.add(dedupe_key)
+                        state.webhook_deliveries += 1
+                    _log(f"delivered {dedupe_key[3]} -> {url} (attempt {attempt})")
+                    return
+                _log(f"retry {dedupe_key[3]} -> {url} (attempt {attempt}, delay {delay}s)")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY)
+    except Exception as e:
+        _log(f"deliver_with_retry crashed for {url}: {e!r}")
 
 
 async def dispatch_transitions(transitions: list):
@@ -71,7 +87,7 @@ async def dispatch_transitions(transitions: list):
         webhooks_snapshot = list(state.webhooks)
         integrations_snapshot = list(state.integrations)
 
-    coros = []
+    _log(f"dispatching {len(transitions)} transitions to {len(webhooks_snapshot)} webhooks, {len(integrations_snapshot)} integrations")
 
     for t in transitions:
         event_type = t["event"]
@@ -85,7 +101,9 @@ async def dispatch_transitions(transitions: list):
 
         for wh in webhooks_snapshot:
             key = ("generic", wh["webhook_id"], alert_id, event_type)
-            coros.append(deliver_with_retry(wh["url"], generic_payload, key))
+            task = asyncio.create_task(deliver_with_retry(wh["url"], generic_payload, key))
+            _pending_tasks.add(task)
+            task.add_done_callback(_pending_tasks.discard)
 
         for integ in integrations_snapshot:
             if event_type not in integ.get("events", ["alert.fired", "alert.resolved"]):
@@ -97,7 +115,6 @@ async def dispatch_transitions(transitions: list):
             else:
                 continue
             key = (integ["type"], integ["webhook_url"], alert_id, event_type)
-            coros.append(deliver_with_retry(integ["webhook_url"], payload, key))
-
-    for c in coros:
-        asyncio.create_task(c)
+            task = asyncio.create_task(deliver_with_retry(integ["webhook_url"], payload, key))
+            _pending_tasks.add(task)
+            task.add_done_callback(_pending_tasks.discard)

@@ -16,8 +16,8 @@ class State:
         self.lock = Lock()
 
         self.config = {
-            "check_interval_seconds": 15,
-            "request_timeout_ms": 3000,
+            "check_interval_seconds": 5,
+            "request_timeout_ms": 2000,
         }
 
         self.proxies: Dict[str, dict] = {}
