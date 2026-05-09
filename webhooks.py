@@ -47,11 +47,15 @@ async def deliver_once(client: httpx.AsyncClient, url: str, payload: dict) -> bo
         if 200 <= resp.status_code < 300:
             return True
         if resp.status_code in TRANSIENT_FAILURE_CODES:
+            _log(f"transient {resp.status_code} from {url}")
             return False
+        _log(f"non-transient {resp.status_code} from {url}: {resp.text[:200]}")
         return True
-    except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError):
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
+        _log(f"net error to {url}: {e!r}")
         return False
-    except Exception:
+    except Exception as e:
+        _log(f"unexpected error to {url}: {e!r}")
         return False
 
 
