@@ -1,4 +1,4 @@
-# ProxyMaze'26 — Cypher Sentinels
+# ProxyMaze'26 - Cypher Sentinels
 
 ## Quick Start (local)
 
