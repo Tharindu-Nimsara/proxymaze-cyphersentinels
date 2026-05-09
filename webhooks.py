@@ -43,7 +43,25 @@ async def deliver_once(client: httpx.AsyncClient, url: str, payload: dict) -> bo
             json=payload,
             headers={"Content-Type": "application/json"},
             timeout=10.0,
+            follow_redirects=False,
         )
+
+        if resp.status_code in (301, 302, 307, 308):
+            new_url = resp.headers.get("location")
+            if new_url:
+                if new_url.startswith("/"):
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(url)
+                    new_url = urlunparse((parsed.scheme, parsed.netloc, new_url, "", "", ""))
+                _log(f"redirect {resp.status_code} from {url} -> {new_url}; replaying POST")
+                resp = await client.post(
+                    new_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=10.0,
+                    follow_redirects=False,
+                )
+
         if 200 <= resp.status_code < 300:
             return True
         if resp.status_code in TRANSIENT_FAILURE_CODES:
