@@ -31,12 +31,14 @@ async def run_one_cycle(client: httpx.AsyncClient):
         targets = [(p["id"], p["url"]) for p in state.proxies.values()]
 
     if not targets:
-        return
+        return 0, 0
 
     tasks = [probe_one(client, pid, url, timeout_s) for pid, url in targets]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     checked_at = now_iso()
+    up_count = 0
+    down_count = 0
     with state.lock:
         for r in results:
             if isinstance(r, Exception):
@@ -50,8 +52,10 @@ async def run_one_cycle(client: httpx.AsyncClient):
             proxy["total_checks"] = proxy.get("total_checks", 0) + 1
             if new_status == "down":
                 proxy["consecutive_failures"] = proxy.get("consecutive_failures", 0) + 1
+                down_count += 1
             else:
                 proxy["consecutive_failures"] = 0
+                up_count += 1
             proxy["up_count"] = proxy.get("up_count", 0) + (1 if new_status == "up" else 0)
             proxy["history"].append({"checked_at": checked_at, "status": new_status})
             if len(proxy["history"]) > MAX_HISTORY_ENTRIES:
@@ -61,17 +65,24 @@ async def run_one_cycle(client: httpx.AsyncClient):
         transitions = evaluate_alert_state()
 
     if transitions:
+        _log(f"transitions emitted: {[t['event'] for t in transitions]}")
         await dispatch_transitions(transitions)
+
+    return up_count, down_count
 
 
 async def monitor_loop():
     _log("background monitor started")
+    cycle_num = 0
     while True:
+        cycle_num += 1
         try:
             async with httpx.AsyncClient() as client:
-                await run_one_cycle(client)
+                up, down = await run_one_cycle(client)
+            if up + down > 0:
+                _log(f"cycle {cycle_num}: up={up} down={down} total={up+down}")
         except Exception as e:
-            _log(f"cycle error: {e!r}")
+            _log(f"cycle {cycle_num} error: {e!r}")
 
         interval = max(1, int(state.config.get("check_interval_seconds", 5)))
         slept = 0

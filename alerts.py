@@ -1,8 +1,13 @@
+import sys
 import uuid
 from typing import List
 from state import state, now_iso
 
 THRESHOLD = 0.20
+
+
+def _log(msg: str):
+    print(f"[alerts] {msg}", flush=True, file=sys.stdout)
 
 
 def compute_pool_stats():
@@ -42,6 +47,7 @@ def evaluate_alert_state() -> List[dict]:
         state.alerts.append(alert)
         state.active_alert = alert
         transitions.append({"event": "alert.fired", "alert": alert})
+        _log(f"FIRED {alert['alert_id']} rate={failure_rate} down={down}/{total}")
 
     elif breach and state.active_alert is not None:
         state.active_alert["failure_rate"] = failure_rate
@@ -55,5 +61,6 @@ def evaluate_alert_state() -> List[dict]:
         alert["resolved_at"] = now_iso()
         state.active_alert = None
         transitions.append({"event": "alert.resolved", "alert": alert})
+        _log(f"RESOLVED {alert['alert_id']} rate={failure_rate}")
 
     return transitions
